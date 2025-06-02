@@ -52,6 +52,29 @@ typedef struct {
   int  count;
 } SHA256_CONTEXT;
 
+typedef enum { f_default = 0, f_normal, f_fast } func_t;
+
+static func_t sha256_func = f_default;
+
+
+static unsigned cpu_has_sha(void)
+{
+#if defined(__i386__) || defined (__x86_64__)
+  uint32_t a, b, c, d;
+
+  asm volatile (
+    "cpuid"
+    : "=a" (a), "=b" (b), "=c" (c), "=d" (d)
+    : "a" (7), "c" (0)
+    :
+  );
+
+  return (b >> 29) & 1;
+#else
+  return 0;
+#endif
+}
+
 
 static void
 sha256_init (void *context)
@@ -69,6 +92,10 @@ sha256_init (void *context)
 
   hd->nblocks = 0;
   hd->count = 0;
+
+  if(sha256_func == f_default) {
+    sha256_func = cpu_has_sha() ? f_fast : f_normal;
+  }
 }
 
 
@@ -138,9 +165,218 @@ Sum1 (u32 x)
   return (ror (x, 6) ^ ror (x, 11) ^ ror (x, 25));
 }
 
+#if defined(__i386__) || defined (__x86_64__)
+static void
+transform_fast (SHA256_CONTEXT *sha256, const unsigned char *buffer)
+{
+  static const uint32_t __attribute__ ((aligned (16))) sha256_k[64] = {
+    0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5,
+    0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5,
+    0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3,
+    0x72be5d74, 0x80deb1fe, 0x9bdc06a7, 0xc19bf174,
+    0xe49b69c1, 0xefbe4786, 0x0fc19dc6, 0x240ca1cc,
+    0x2de92c6f, 0x4a7484aa, 0x5cb0a9dc, 0x76f988da,
+    0x983e5152, 0xa831c66d, 0xb00327c8, 0xbf597fc7,
+    0xc6e00bf3, 0xd5a79147, 0x06ca6351, 0x14292967,
+    0x27b70a85, 0x2e1b2138, 0x4d2c6dfc, 0x53380d13,
+    0x650a7354, 0x766a0abb, 0x81c2c92e, 0x92722c85,
+    0xa2bfe8a1, 0xa81a664b, 0xc24b8b70, 0xc76c51a3,
+    0xd192e819, 0xd6990624, 0xf40e3585, 0x106aa070,
+    0x19a4c116, 0x1e376c08, 0x2748774c, 0x34b0bcb5,
+    0x391c0cb3, 0x4ed8aa4a, 0x5b9cca4f, 0x682e6ff3,
+    0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208,
+    0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2
+  };
+
+  static const uint32_t __attribute__ ((aligned (16))) shuffle_be[4] = {
+    0x00010203, 0x04050607, 0x08090a0b, 0x0c0d0e0f
+  };
+
+  // necessary for asm
+  void *tmp;
+
+  // code is generated; taken from sha256_inline.S
+  asm volatile (
+    "lea %4, %0\n"
+    "movdqu %3,%%xmm5\n"
+
+    "pshufd $0x1b,(%1),%%xmm6\n"
+    "pshufd $0xb1,0x10(%1),%%xmm7\n"
+    "movdqa %%xmm6,%%xmm0\n"
+    "pblendw $0xf,%%xmm7,%%xmm6\n"
+    "pblendw $0xf0,%%xmm7,%%xmm0\n"
+    "pshufd $0x4e,%%xmm0,%%xmm7\n"
+    "movdqu (%2),%%xmm0\n"
+    "pshufb %%xmm5,%%xmm0\n"
+    "movdqa %%xmm0,%%xmm1\n"
+    "paddd  (%0),%%xmm0\n"
+    "sha256rnds2 %%xmm0,%%xmm6,%%xmm7\n"
+    "pshufd $0xe,%%xmm0,%%xmm0\n"
+    "sha256rnds2 %%xmm0,%%xmm7,%%xmm6\n"
+    "movdqu 0x10(%2),%%xmm0\n"
+    "pshufb %%xmm5,%%xmm0\n"
+    "movdqa %%xmm0,%%xmm2\n"
+    "paddd  0x10(%0),%%xmm0\n"
+    "sha256rnds2 %%xmm0,%%xmm6,%%xmm7\n"
+    "pshufd $0xe,%%xmm0,%%xmm0\n"
+    "sha256rnds2 %%xmm0,%%xmm7,%%xmm6\n"
+    "sha256msg1 %%xmm2,%%xmm1\n"
+    "movdqu 0x20(%2),%%xmm0\n"
+    "pshufb %%xmm5,%%xmm0\n"
+    "movdqa %%xmm0,%%xmm3\n"
+    "paddd  0x20(%0),%%xmm0\n"
+    "sha256rnds2 %%xmm0,%%xmm6,%%xmm7\n"
+    "pshufd $0xe,%%xmm0,%%xmm0\n"
+    "sha256rnds2 %%xmm0,%%xmm7,%%xmm6\n"
+    "sha256msg1 %%xmm3,%%xmm2\n"
+    "movdqu 0x30(%2),%%xmm0\n"
+    "pshufb %%xmm5,%%xmm0\n"
+    "movdqa %%xmm0,%%xmm4\n"
+    "paddd  0x30(%0),%%xmm0\n"
+    "sha256rnds2 %%xmm0,%%xmm6,%%xmm7\n"
+    "movdqa %%xmm4,%%xmm5\n"
+    "palignr $0x4,%%xmm3,%%xmm5\n"
+    "paddd  %%xmm5,%%xmm1\n"
+    "sha256msg2 %%xmm4,%%xmm1\n"
+    "pshufd $0xe,%%xmm0,%%xmm0\n"
+    "sha256rnds2 %%xmm0,%%xmm7,%%xmm6\n"
+    "sha256msg1 %%xmm4,%%xmm3\n"
+    "movdqa %%xmm1,%%xmm0\n"
+    "paddd  0x40(%0),%%xmm0\n"
+    "sha256rnds2 %%xmm0,%%xmm6,%%xmm7\n"
+    "movdqa %%xmm1,%%xmm5\n"
+    "palignr $0x4,%%xmm4,%%xmm5\n"
+    "paddd  %%xmm5,%%xmm2\n"
+    "sha256msg2 %%xmm1,%%xmm2\n"
+    "pshufd $0xe,%%xmm0,%%xmm0\n"
+    "sha256rnds2 %%xmm0,%%xmm7,%%xmm6\n"
+    "sha256msg1 %%xmm1,%%xmm4\n"
+    "movdqa %%xmm2,%%xmm0\n"
+    "paddd  0x50(%0),%%xmm0\n"
+    "sha256rnds2 %%xmm0,%%xmm6,%%xmm7\n"
+    "movdqa %%xmm2,%%xmm5\n"
+    "palignr $0x4,%%xmm1,%%xmm5\n"
+    "paddd  %%xmm5,%%xmm3\n"
+    "sha256msg2 %%xmm2,%%xmm3\n"
+    "pshufd $0xe,%%xmm0,%%xmm0\n"
+    "sha256rnds2 %%xmm0,%%xmm7,%%xmm6\n"
+    "sha256msg1 %%xmm2,%%xmm1\n"
+    "movdqa %%xmm3,%%xmm0\n"
+    "paddd  0x60(%0),%%xmm0\n"
+    "sha256rnds2 %%xmm0,%%xmm6,%%xmm7\n"
+    "movdqa %%xmm3,%%xmm5\n"
+    "palignr $0x4,%%xmm2,%%xmm5\n"
+    "paddd  %%xmm5,%%xmm4\n"
+    "sha256msg2 %%xmm3,%%xmm4\n"
+    "pshufd $0xe,%%xmm0,%%xmm0\n"
+    "sha256rnds2 %%xmm0,%%xmm7,%%xmm6\n"
+    "sha256msg1 %%xmm3,%%xmm2\n"
+    "movdqa %%xmm4,%%xmm0\n"
+    "paddd  0x70(%0),%%xmm0\n"
+    "sha256rnds2 %%xmm0,%%xmm6,%%xmm7\n"
+    "movdqa %%xmm4,%%xmm5\n"
+    "palignr $0x4,%%xmm3,%%xmm5\n"
+    "paddd  %%xmm5,%%xmm1\n"
+    "sha256msg2 %%xmm4,%%xmm1\n"
+    "pshufd $0xe,%%xmm0,%%xmm0\n"
+    "sha256rnds2 %%xmm0,%%xmm7,%%xmm6\n"
+    "sha256msg1 %%xmm4,%%xmm3\n"
+    "movdqa %%xmm1,%%xmm0\n"
+    "paddd  0x80(%0),%%xmm0\n"
+    "sha256rnds2 %%xmm0,%%xmm6,%%xmm7\n"
+    "movdqa %%xmm1,%%xmm5\n"
+    "palignr $0x4,%%xmm4,%%xmm5\n"
+    "paddd  %%xmm5,%%xmm2\n"
+    "sha256msg2 %%xmm1,%%xmm2\n"
+    "pshufd $0xe,%%xmm0,%%xmm0\n"
+    "sha256rnds2 %%xmm0,%%xmm7,%%xmm6\n"
+    "sha256msg1 %%xmm1,%%xmm4\n"
+    "movdqa %%xmm2,%%xmm0\n"
+    "paddd  0x90(%0),%%xmm0\n"
+    "sha256rnds2 %%xmm0,%%xmm6,%%xmm7\n"
+    "movdqa %%xmm2,%%xmm5\n"
+    "palignr $0x4,%%xmm1,%%xmm5\n"
+    "paddd  %%xmm5,%%xmm3\n"
+    "sha256msg2 %%xmm2,%%xmm3\n"
+    "pshufd $0xe,%%xmm0,%%xmm0\n"
+    "sha256rnds2 %%xmm0,%%xmm7,%%xmm6\n"
+    "sha256msg1 %%xmm2,%%xmm1\n"
+    "movdqa %%xmm3,%%xmm0\n"
+    "paddd  0xa0(%0),%%xmm0\n"
+    "sha256rnds2 %%xmm0,%%xmm6,%%xmm7\n"
+    "movdqa %%xmm3,%%xmm5\n"
+    "palignr $0x4,%%xmm2,%%xmm5\n"
+    "paddd  %%xmm5,%%xmm4\n"
+    "sha256msg2 %%xmm3,%%xmm4\n"
+    "pshufd $0xe,%%xmm0,%%xmm0\n"
+    "sha256rnds2 %%xmm0,%%xmm7,%%xmm6\n"
+    "sha256msg1 %%xmm3,%%xmm2\n"
+    "movdqa %%xmm4,%%xmm0\n"
+    "paddd  0xb0(%0),%%xmm0\n"
+    "sha256rnds2 %%xmm0,%%xmm6,%%xmm7\n"
+    "movdqa %%xmm4,%%xmm5\n"
+    "palignr $0x4,%%xmm3,%%xmm5\n"
+    "paddd  %%xmm5,%%xmm1\n"
+    "sha256msg2 %%xmm4,%%xmm1\n"
+    "pshufd $0xe,%%xmm0,%%xmm0\n"
+    "sha256rnds2 %%xmm0,%%xmm7,%%xmm6\n"
+    "sha256msg1 %%xmm4,%%xmm3\n"
+    "movdqa %%xmm1,%%xmm0\n"
+    "paddd  0xc0(%0),%%xmm0\n"
+    "sha256rnds2 %%xmm0,%%xmm6,%%xmm7\n"
+    "movdqa %%xmm1,%%xmm5\n"
+    "palignr $0x4,%%xmm4,%%xmm5\n"
+    "paddd  %%xmm5,%%xmm2\n"
+    "sha256msg2 %%xmm1,%%xmm2\n"
+    "pshufd $0xe,%%xmm0,%%xmm0\n"
+    "sha256rnds2 %%xmm0,%%xmm7,%%xmm6\n"
+    "sha256msg1 %%xmm1,%%xmm4\n"
+    "movdqa %%xmm2,%%xmm0\n"
+    "paddd  0xd0(%0),%%xmm0\n"
+    "sha256rnds2 %%xmm0,%%xmm6,%%xmm7\n"
+    "movdqa %%xmm2,%%xmm5\n"
+    "palignr $0x4,%%xmm1,%%xmm5\n"
+    "paddd  %%xmm5,%%xmm3\n"
+    "sha256msg2 %%xmm2,%%xmm3\n"
+    "pshufd $0xe,%%xmm0,%%xmm0\n"
+    "sha256rnds2 %%xmm0,%%xmm7,%%xmm6\n"
+    "movdqa %%xmm3,%%xmm0\n"
+    "paddd  0xe0(%0),%%xmm0\n"
+    "sha256rnds2 %%xmm0,%%xmm6,%%xmm7\n"
+    "movdqa %%xmm3,%%xmm5\n"
+    "palignr $0x4,%%xmm2,%%xmm5\n"
+    "paddd  %%xmm5,%%xmm4\n"
+    "sha256msg2 %%xmm3,%%xmm4\n"
+    "pshufd $0xe,%%xmm0,%%xmm0\n"
+    "sha256rnds2 %%xmm0,%%xmm7,%%xmm6\n"
+    "movdqa %%xmm4,%%xmm0\n"
+    "paddd  0xf0(%0),%%xmm0\n"
+    "sha256rnds2 %%xmm0,%%xmm6,%%xmm7\n"
+    "pshufd $0xe,%%xmm0,%%xmm0\n"
+    "sha256rnds2 %%xmm0,%%xmm7,%%xmm6\n"
+    "pshufd $0xb1,%%xmm7,%%xmm0\n"
+    "pshufd $0x1b,%%xmm6,%%xmm6\n"
+    "movdqa %%xmm0,%%xmm7\n"
+    "pblendw $0xf0,%%xmm6,%%xmm7\n"
+    "pblendw $0xf0,%%xmm0,%%xmm6\n"
+    "pshufd $0x4e,%%xmm7,%%xmm7\n"
+    "movdqu (%1),%%xmm0\n"
+    "paddd  %%xmm6,%%xmm0\n"
+    "movdqu %%xmm0,(%1)\n"
+    "movdqu 0x10(%1),%%xmm0\n"
+    "paddd  %%xmm7,%%xmm0\n"
+    "movdqu %%xmm0,0x10(%1)\n"
+
+    : "=&r" (tmp)
+    : "r" (sha256), "r" (buffer), "m" (shuffle_be), "m" (sha256_k)
+    : "memory"
+  );
+}
+#endif
+
 
 static void
-transform (SHA256_CONTEXT *hd, const unsigned char *data)
+transform_default (SHA256_CONTEXT *hd, const unsigned char *data)
 {
   static const u32 K[64] = {
     0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5,
@@ -258,6 +494,21 @@ transform (SHA256_CONTEXT *hd, const unsigned char *data)
 #undef S0
 #undef S1
 #undef R
+
+
+static void
+transform (SHA256_CONTEXT *hd, const unsigned char *data)
+{
+  switch(sha256_func) {
+#if defined(__i386__) || defined (__x86_64__)
+    case f_fast:
+      transform_fast(hd, data);
+      break;
+#endif
+    default:
+      transform_default(hd, data);
+  }
+}
 
 
 /* Update the message digest with the contents of INBUF with length
