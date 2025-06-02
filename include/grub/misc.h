@@ -35,6 +35,20 @@
 #define ARRAY_SIZE(array) (sizeof (array) / sizeof (array[0]))
 #define COMPILE_TIME_ASSERT(cond) switch (0) { case 1: case !(cond): ; }
 
+/*
+ * gcc would optimize away the 'if' branch since it 'knows'
+ * 'x' is aligned and so the 'if' condition must be false.
+ * Pass the pointer through a volatile var to avoid this.
+ */
+#define STACK_ALIGN_CHECK(N) \
+do { \
+  int x[1] __attribute__((aligned((N)))); \
+  volatile long l = (long) x; \
+  if((l & ((N) - 1))) { \
+    grub_fatal("%s: misaligned stack: %p\n", __FUNCTION__, x); \
+  } \
+} while(0)
+
 #define grub_dprintf(condition, ...) grub_real_dprintf(GRUB_FILE, __LINE__, condition, __VA_ARGS__)
 
 void *EXPORT_FUNC(grub_memmove) (void *dest, const void *src, grub_size_t n);

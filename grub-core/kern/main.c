@@ -318,6 +318,8 @@ grub_main (void)
 
   grub_boot_time ("After machine init.");
 
+  STACK_ALIGN_CHECK(16);
+
   /* This breaks flicker-free boot on EFI systems, so disable it there. */
 #ifndef GRUB_MACHINE_EFI
   /* Hello.  */
