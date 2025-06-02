@@ -110,6 +110,11 @@ LOCAL(cont):
 #endif
 	subl	%edi, %ecx
 
+	/* enable sse */
+	movl	%cr4, %eax
+	orl	$0x40200, %eax
+	movl	%eax,%cr4
+
 	/* clean out */
 	xorl	%eax, %eax
 	cld
