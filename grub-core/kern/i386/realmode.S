@@ -47,7 +47,21 @@
  */
 
 protstack:
-	.long	GRUB_MEMORY_MACHINE_PROT_STACK
+	/*
+	 * Note: Subtract 4 because real_to_prot/prot_to_real assume to be *called*.
+	 *       They change the address on the top of stack and then return.
+	 *
+	 *       Subsequently, for the first real_to_prot call, 'protstack' must look as if
+	 *       real_to_prot has been called - so lower the stack value by 4.
+	 *
+	 *       Otherwise, after the first real_to_prot call, the stack will have an
+	 *       invalid address of GRUB_MEMORY_MACHINE_PROT_STACK + 4.
+	 *
+	 *       Plus, this leads to breaking stack frame alignment assumptions
+	 *       in gcc (expecting stack frames to be 16-bytes aligned) and all local
+	 *       variables larger than 4 bytes will be misaligned.
+	 */
+	.long	GRUB_MEMORY_MACHINE_PROT_STACK - 4
 
 	.macro PROT_TO_REAL
 	call	prot_to_real
@@ -172,18 +186,13 @@ protcseg:
 	movw	%ax, %gs
 	movw	%ax, %ss
 
-	/* put the return address in a known safe location */
+	/* get the return address */
 	movl	(%esp), %eax
-	movl	%eax, GRUB_MEMORY_MACHINE_REAL_STACK
 
-	/* get protected mode stack */
-	movl	protstack, %eax
-	movl	%eax, %esp
-	movl	%eax, %ebp
-
-	/* get return address onto the right stack */
-	movl	GRUB_MEMORY_MACHINE_REAL_STACK, %eax
+	/* set up protected mode stack */
+	movl	protstack, %esp
 	movl	%eax, (%esp)
+	movl	%esp, %ebp
 
 	/* zero %eax */
 	xorl	%eax, %eax
@@ -222,17 +231,15 @@ prot_to_real:
 	lidt    LOCAL(realidt)
 
 	/* save the protected mode stack */
-	movl	%esp, %eax
-	movl	%eax, protstack
+	movl	%esp, protstack
 
 	/* get the return address */
 	movl	(%esp), %eax
-	movl	%eax, GRUB_MEMORY_MACHINE_REAL_STACK
 
-	/* set up new stack */
-	movl	$GRUB_MEMORY_MACHINE_REAL_STACK, %eax
-	movl	%eax, %esp
-	movl	%eax, %ebp
+	/* set up real mode stack */
+	movl	$GRUB_MEMORY_MACHINE_REAL_STACK, %esp
+	pushl	%eax
+	movl	%esp, %ebp
 
 	/* set up segment limits */
 	movw	$GRUB_MEMORY_MACHINE_PSEUDO_REAL_DSEG, %ax
