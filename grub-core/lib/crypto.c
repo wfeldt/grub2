@@ -414,16 +414,44 @@ grub_crypto_hmac_buffer (const struct gcry_md_spec *md,
 			 const void *key, grub_size_t keylen,
 			 const void *data, grub_size_t datalen, void *out)
 {
-  struct grub_crypto_hmac_handle *hnd;
+  grub_uint8_t __attribute__((aligned(16))) ctx[GRUB_CRYPTO_MAX_MD_CONTEXT_SIZE];
+  grub_uint8_t __attribute__((aligned(16))) buf[GRUB_CRYPTO_MAX_MDLEN] = { };
 
-  hnd = grub_crypto_hmac_init (md, key, keylen);
-  if (!hnd)
-    return GPG_ERR_OUT_OF_MEMORY;
+  if (md->blocksize > GRUB_CRYPTO_MAX_MDLEN || md->mdlen > md->blocksize)
+    return GPG_ERR_NOT_SUPPORTED;
 
-  grub_crypto_hmac_write (hnd, data, datalen);
-  return grub_crypto_hmac_fini (hnd, out);
+  if(keylen > md->blocksize) {
+    grub_crypto_hash (md, buf, key, keylen);
+  }
+  else {
+    grub_memcpy (buf, key, keylen);
+  }
+
+  for(unsigned u = 0; u < md->blocksize; u++) {
+    buf[u] ^= 0x36;
+  }
+
+  md->init (&ctx);
+  md->write (&ctx, buf, md->blocksize);
+  md->write (&ctx, data, datalen);
+  md->final (&ctx);
+
+  for(unsigned u = 0; u < md->blocksize; u++) {
+    buf[u] ^= 0x36 ^ 0x5c;
+  }
+
+  grub_uint8_t __attribute__((aligned(16))) sum1[GRUB_CRYPTO_MAX_MDLEN];
+  grub_memcpy (sum1, md->read (&ctx), md->mdlen);
+
+  md->init (&ctx);
+  md->write (&ctx, buf, md->blocksize);
+  md->write (&ctx, sum1, md->mdlen);
+  md->final (&ctx);
+
+  grub_memcpy (out, md->read (&ctx), md->mdlen);
+
+  return GPG_ERR_NO_ERROR;
 }
-
 
 grub_err_t
 grub_crypto_gcry_error (gcry_err_code_t in)
